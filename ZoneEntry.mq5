@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, junmt"
 #property link "https://"
-#property version "0.0.2"
+#property version "0.0.3"
 #include <Expert\Money\MoneyFixedMargin.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -15,16 +15,17 @@ CTrade m_trade;           // trading object
 CSymbolInfo m_symbol;     // symbol info object
 CMoneyFixedMargin m_money;
 //---
-input double InpStopLoss = 10.0;         // StopLoss
-input double InpTakeProfit = 100.0;      // TakeProfit
-input double InpTrailingStop = 50.0;     // TrailingStop
-input bool AutoLot = false;              // AutoLot (percent from a free margin)
-input double Risk = 10;                  // Risk percent from a free margin
-input double ManualLots = 0.01;          // ManualLots
-input ulong m_magic = 123;               // Magic number
-input string TradeComment = "ZoneEntry"; // TradeComment
-input ulong InpSlippage = 1;             // Slippage
-input int MaxOrders = 10;                // Max Orders
+input double InpStopLoss = 10.0;               // StopLoss
+input double InpTakeProfit = 100.0;            // TakeProfit
+input double InpTrailingStop = 50.0;           // TrailingStop
+input bool AutoLot = false;                    // AutoLot (percent from a free margin)
+input double Risk = 10;                        // Risk percent from a free margin
+input double ManualLots = 0.01;                // ManualLots
+input ulong m_magic = 123;                     // Magic number
+input string TradeComment = "ZoneEntry";       // TradeComment
+input ulong InpSlippage = 1;                   // Slippage
+input int MaxOrders = 10;                      // Max Orders
+input bool IsManualOrdersAndPositions = false; // Manual Position
 //---
 int LotDigits;
 //---
@@ -39,6 +40,9 @@ int atr;
 
 string input_names[] = {"Support1", "Support2", "Support3",
                         "Resistance1", "Resistance2", "Resistance3"};
+
+int barcount = 0;
+datetime bartime = 0;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -118,58 +122,6 @@ void OnTick()
     setBuyPositionTakeProfit();
     setSellPositionTakeProfit();
 
-    int total_buy = 0;
-    int total_sell = 0;
-
-    for (int i = 0; i < PositionsTotal(); i++)
-    {
-        m_position.SelectByIndex(i);
-
-        if (m_position.Symbol() != m_symbol.Name() ||
-            m_position.Magic() != m_magic)
-        {
-            continue;
-        }
-
-        double currentPrice = m_position.PriceCurrent();
-        double openPrice = m_position.PriceOpen();
-
-        if (m_position.PositionType() == POSITION_TYPE_BUY)
-        {
-            total_buy++;
-            if (ExtTrailingStop > 0)
-            {
-                double profit = currentPrice - openPrice;
-                if (profit > ExtTrailingStop &&
-                    m_position.PriceCurrent() - ExtTrailingStop >
-                        m_position.StopLoss())
-                {
-                    double sl = NormalizeDouble(currentPrice - ExtTrailingStop,
-                                                m_symbol.Digits());
-                    m_trade.PositionModify(m_position.Ticket(), sl,
-                                           m_position.TakeProfit());
-                }
-            }
-        }
-        if (m_position.PositionType() == POSITION_TYPE_SELL)
-        {
-            total_sell++;
-            if (ExtTrailingStop > 0)
-            {
-                double profit = openPrice - currentPrice;
-                if (profit > ExtTrailingStop &&
-                    m_position.PriceCurrent() + ExtTrailingStop <
-                        m_position.StopLoss())
-                {
-                    double sl = NormalizeDouble(currentPrice + ExtTrailingStop,
-                                                m_symbol.Digits());
-                    m_trade.PositionModify(m_position.Ticket(), sl,
-                                           m_position.TakeProfit());
-                }
-            }
-        }
-    }
-
     // プロフィットをとる
     if (InpTakeProfit > 0)
     {
@@ -177,7 +129,7 @@ void OnTick()
         {
             m_position.SelectByIndex(i);
             if (m_position.Symbol() != Symbol() ||
-                m_position.Magic() != m_magic)
+                (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
             {
                 continue;
             }
@@ -224,6 +176,63 @@ void OnTick()
     //     }
     // }
 
+    // 計算量が多いので、PERIOD_CURRENT間隔で計算を行う
+    //--- ゼロバーの開いた時間を取得する
+    datetime currbar_time = iTime(Symbol(), PERIOD_H1, 0);
+    bartime = iTime(Symbol(), PERIOD_M1, 0);
+    //--- 新しいバーが到着すると開いた時刻が変わる
+    if (bartime == currbar_time)
+    {
+        return;
+    }
+
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        m_position.SelectByIndex(i);
+
+        if (m_position.Symbol() != m_symbol.Name() ||
+            (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
+        {
+            continue;
+        }
+
+        double currentPrice = m_position.PriceCurrent();
+        double openPrice = m_position.PriceOpen();
+
+        if (m_position.PositionType() == POSITION_TYPE_BUY)
+        {
+            if (ExtTrailingStop > 0)
+            {
+                double profit = currentPrice - openPrice;
+                if (profit > ExtTrailingStop &&
+                    m_position.PriceCurrent() - ExtTrailingStop >
+                        m_position.StopLoss())
+                {
+                    double sl = NormalizeDouble(currentPrice - ExtTrailingStop,
+                                                m_symbol.Digits());
+                    m_trade.PositionModify(m_position.Ticket(), sl,
+                                           m_position.TakeProfit());
+                }
+            }
+        }
+        if (m_position.PositionType() == POSITION_TYPE_SELL)
+        {
+            if (ExtTrailingStop > 0)
+            {
+                double profit = openPrice - currentPrice;
+                if (profit > ExtTrailingStop &&
+                    m_position.PriceCurrent() + ExtTrailingStop <
+                        m_position.StopLoss())
+                {
+                    double sl = NormalizeDouble(currentPrice + ExtTrailingStop,
+                                                m_symbol.Digits());
+                    m_trade.PositionModify(m_position.Ticket(), sl,
+                                           m_position.TakeProfit());
+                }
+            }
+        }
+    }
+
     return;
 }
 //+------------------------------------------------------------------+
@@ -235,7 +244,7 @@ void ClosePositions(ENUM_POSITION_TYPE pos_type)
          i--) // returns the number of current orders
         if (m_position.SelectByIndex(i))
             if (m_position.Symbol() == Symbol() &&
-                m_position.Magic() == m_magic)
+                (m_position.Magic() == m_magic || IsManualOrdersAndPositions))
                 if (m_position.PositionType() == pos_type)
                     m_trade.PositionClose(m_position.Ticket());
 }
@@ -599,7 +608,7 @@ void removeAll()
         ulong magic = OrderGetInteger(ORDER_MAGIC);
 
         // Magic Numberが一致する指値注文をチェック
-        if (magic == m_magic)
+        if (magic == m_magic || IsManualOrdersAndPositions)
         {
             // 削除する注文情報をセット
             MqlTradeRequest request;
@@ -632,7 +641,7 @@ ulong getBuyPositionWithMaxProfit()
     for (int i = 0; i < PositionsTotal(); i++)
     {
         m_position.SelectByIndex(i);
-        if (m_position.Symbol() != Symbol() || m_position.Magic() != m_magic)
+        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
         {
             continue;
         }
@@ -658,7 +667,7 @@ ulong getSellPositionWithMaxProfit()
     for (int i = 0; i < PositionsTotal(); i++)
     {
         m_position.SelectByIndex(i);
-        if (m_position.Symbol() != Symbol() || m_position.Magic() != m_magic)
+        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
         {
             continue;
         }
@@ -683,7 +692,7 @@ int getBuyPositionCount()
     for (int i = 0; i < PositionsTotal(); i++)
     {
         m_position.SelectByIndex(i);
-        if (m_position.Symbol() != Symbol() || m_position.Magic() != m_magic)
+        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
         {
             continue;
         }
@@ -703,7 +712,7 @@ int getSellPositionCount()
     for (int i = 0; i < PositionsTotal(); i++)
     {
         m_position.SelectByIndex(i);
-        if (m_position.Symbol() != Symbol() || m_position.Magic() != m_magic)
+        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
         {
             continue;
         }
@@ -727,7 +736,7 @@ void setBuyPositionTakeProfit()
         {
             m_position.SelectByIndex(i);
             if (m_position.Symbol() != Symbol() ||
-                m_position.Magic() != m_magic)
+                (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
             {
                 continue;
             }
@@ -761,7 +770,7 @@ void setSellPositionTakeProfit()
         {
             m_position.SelectByIndex(i);
             if (m_position.Symbol() != Symbol() ||
-                m_position.Magic() != m_magic)
+                (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
             {
                 continue;
             }
@@ -792,7 +801,7 @@ bool isPendingOrderExist(double price)
         ulong ticket = OrderGetTicket(i);
         ulong magic = OrderGetInteger(ORDER_MAGIC);
         double order_price = OrderGetDouble(ORDER_PRICE_OPEN);
-        if (magic == m_magic && order_price == price)
+        if ((magic == m_magic || IsManualOrdersAndPositions) && order_price == price)
         {
             return true;
         }
