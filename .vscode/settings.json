@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "*.inc": "php",
+        "*.mq5": "c",
+        "*.mqh": "c"
+    },
+    "C_Cpp.default.includePath": [
+        "c:\\Users\\datai\\AppData\\Roaming\\MetaQuotes\\Terminal\\30CF3465B87D17D00E7FD8366A68D7C6\\MQL5\\Include"
+    ]
+}
