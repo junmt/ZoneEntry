@@ -80,11 +80,11 @@ int OnInit()
     ExtTrailingStop = InpTrailingStop * m_adjusted_point;
     ExtSlippage = InpSlippage * digits_adjust;
 
-    m_trade.SetDeviationInPoints(ExtSlippage);
-    //---
-    if (!m_money.Init(GetPointer(m_symbol), Period(), m_adjusted_point))
-        return (INIT_FAILED);
-    m_money.Percent(10); // 10% risk
+    // m_trade.SetDeviationInPoints(ExtSlippage);
+    // //---
+    // if (!m_money.Init(GetPointer(m_symbol), Period(), m_adjusted_point))
+    //     return (INIT_FAILED);
+    // m_money.Percent(10); // 10% risk
 
     atr = iATR(m_symbol.Name(), PERIOD_H1, 14);
 
