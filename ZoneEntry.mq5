@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, junmt"
 #property link "https://"
-#property version "0.0.4"
+#property version "0.0.5"
 #include <Expert\Money\MoneyFixedMargin.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -107,7 +107,6 @@ void OnDeinit(const int reason)
 void OnTick()
 {
     //---
-
     if (IsTradeStartButtonPressed())
     {
         entryAll();
@@ -504,6 +503,7 @@ void entry(double price)
     double min_price = 0.0;
     double max_price = 0.0;
     double sl = 0.0;
+    double currentPrice = m_symbol.Ask();
 
     double atr_array[];
     ArraySetAsSeries(atr_array, true);
@@ -517,7 +517,7 @@ void entry(double price)
         return;
     }
 
-    if (price > m_symbol.Ask())
+    if (price > currentPrice)
     {
         // 指値の最小priceはATR+priceとする
         max_price = NormalizeDouble(price + atr_array[0], m_symbol.Digits());
@@ -543,7 +543,7 @@ void entry(double price)
     for (int i = 0; i < MaxOrders; i++)
     {
         double target_price = 0.0;
-        if (price > m_symbol.Ask())
+        if (price > currentPrice)
         {
             target_price =
                 NormalizeDouble(min_price + step * i, m_symbol.Digits());
@@ -551,7 +551,7 @@ void entry(double price)
             {
                 continue;
             }
-            Print(target_price, " ", sl, " ", m_symbol.Ask(), " ",
+            Print(target_price, " ", sl, " ", currentPrice, " ",
                   m_symbol.Digits(), " ", m_symbol.Point());
             request.action = TRADE_ACTION_PENDING;
             request.type = ORDER_TYPE_SELL_LIMIT;
@@ -572,7 +572,7 @@ void entry(double price)
             {
                 continue;
             }
-            Print(target_price, " ", sl, " ", m_symbol.Ask(), " ",
+            Print(target_price, " ", sl, " ", currentPrice, " ",
                   m_symbol.Digits(), " ", m_symbol.Point());
             request.action = TRADE_ACTION_PENDING;
             request.type = ORDER_TYPE_BUY_LIMIT;
