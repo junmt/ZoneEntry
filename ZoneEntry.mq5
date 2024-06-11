@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, junmt"
 #property link "https://"
-#property version "0.0.5"
+#property version "1.00"
 #include <Expert\Money\MoneyFixedMargin.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -25,6 +25,7 @@ input ulong m_magic = 123;                     // Magic number
 input string TradeComment = "ZoneEntry";       // TradeComment
 input ulong InpSlippage = 1;                   // Slippage
 input int MaxOrders = 10;                      // Max Orders
+input int max_position = 1;                    // Max Position
 input bool IsManualOrdersAndPositions = false; // Manual Position
 //---
 int LotDigits;
@@ -80,11 +81,10 @@ int OnInit()
     ExtTrailingStop = InpTrailingStop * m_adjusted_point;
     ExtSlippage = InpSlippage * digits_adjust;
 
-    // m_trade.SetDeviationInPoints(ExtSlippage);
-    // //---
-    // if (!m_money.Init(GetPointer(m_symbol), Period(), m_adjusted_point))
-    //     return (INIT_FAILED);
-    // m_money.Percent(10); // 10% risk
+    m_trade.SetDeviationInPoints(ExtSlippage);
+    //---
+    m_money.Init(GetPointer(m_symbol), Period(), m_adjusted_point);
+    m_money.Percent(10); // 10% risk
 
     atr = iATR(m_symbol.Name(), PERIOD_H1, 14);
 
@@ -632,12 +632,16 @@ void removeAll()
     }
 }
 //+------------------------------------------------------------------+
-//| 現在の買いポジションの中で最も含み益が大きいポジションのticketidを返す|
+//| 現在のポジションの中で最も含み益が大きいポジションのticketidを返す|
 //+------------------------------------------------------------------+
-ulong getBuyPositionWithMaxProfit()
+void getPositionWithMaxProfit(ulong &tickets[], int positionType)
 {
-    double minPrice = 0.0;
-    ulong ticket = 0;
+    double positionPrice[];
+    int priceCounter = 0;
+    int counter = 0;
+
+    ArrayResize(positionPrice, getPositionCount(positionType));
+
     for (int i = 0; i < PositionsTotal(); i++)
     {
         m_position.SelectByIndex(i);
@@ -645,25 +649,49 @@ ulong getBuyPositionWithMaxProfit()
         {
             continue;
         }
-        if (m_position.PositionType() == POSITION_TYPE_BUY)
+        if (m_position.PositionType() == positionType)
         {
-            double price = m_position.PriceOpen();
-            if (minPrice == 0.0 || minPrice > price)
+            positionPrice[priceCounter] = m_position.PriceOpen();
+            priceCounter++;
+        }
+    }
+
+    // 価格を昇順にソート
+    ArraySort(positionPrice);
+    if(positionType == POSITION_TYPE_SELL)
+    {
+        ArrayReverse(positionPrice);
+    }
+
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        m_position.SelectByIndex(i);
+        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
+        {
+            continue;
+        }
+        double price = m_position.PriceOpen();
+        for (int j = 0; j < max_position; j++)
+        {
+            if (positionPrice[j] == price)
             {
-                minPrice = price;
-                ticket = m_position.Ticket();
+                tickets[counter] = m_position.Ticket();
+                counter++;
+                break;
             }
         }
+        if (counter == max_position)
+        {
+            break;
+        }
     }
-    return ticket;
 }
 //+------------------------------------------------------------------+
-//| 現在の売りポジションの中で最も含み益が大きいポジションのticketidを返す|
+//| 現在のポジション数を返す                                        |
 //+------------------------------------------------------------------+
-ulong getSellPositionWithMaxProfit()
+int getPositionCount(int positionType)
 {
-    double maxPrice = 0.0;
-    ulong ticket = 0;
+    int positionCount = 0;
     for (int i = 0; i < PositionsTotal(); i++)
     {
         m_position.SelectByIndex(i);
@@ -671,67 +699,25 @@ ulong getSellPositionWithMaxProfit()
         {
             continue;
         }
-        if (m_position.PositionType() == POSITION_TYPE_SELL)
+        if (m_position.PositionType() == positionType)
         {
-            double price = m_position.PriceOpen();
-            if (maxPrice == 0.0 || price > maxPrice)
-            {
-                maxPrice = price;
-                ticket = m_position.Ticket();
-            }
+            positionCount++;
         }
     }
-    return ticket;
-}
-//+------------------------------------------------------------------+
-//| 現在の買いポジション数を返す                                        |
-//+------------------------------------------------------------------+
-int getBuyPositionCount()
-{
-    int buyPositionCount = 0;
-    for (int i = 0; i < PositionsTotal(); i++)
-    {
-        m_position.SelectByIndex(i);
-        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-        {
-            continue;
-        }
-        if (m_position.PositionType() == POSITION_TYPE_BUY)
-        {
-            buyPositionCount++;
-        }
-    }
-    return buyPositionCount;
-}
-//+------------------------------------------------------------------+
-//| 現在の売りポジション数を返す                                        |
-//+------------------------------------------------------------------+
-int getSellPositionCount()
-{
-    int sellPositionCount = 0;
-    for (int i = 0; i < PositionsTotal(); i++)
-    {
-        m_position.SelectByIndex(i);
-        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-        {
-            continue;
-        }
-        if (m_position.PositionType() == POSITION_TYPE_SELL)
-        {
-            sellPositionCount++;
-        }
-    }
-    return sellPositionCount;
+    return positionCount;
 }
 //+------------------------------------------------------------------+
 //| 買いポジションが２個以上になった場合、不利なポジションに3pipsのTPを設定する|
 //+------------------------------------------------------------------+
 void setBuyPositionTakeProfit()
 {
-    int buyPositionCount = getBuyPositionCount();
+    ulong tickets[];
+    ArrayResize(tickets, max_position);
+
+    int buyPositionCount = getPositionCount(POSITION_TYPE_BUY);
     if (buyPositionCount >= 2)
     {
-        ulong ticket = getBuyPositionWithMaxProfit();
+        getPositionWithMaxProfit(tickets, POSITION_TYPE_BUY);
         for (int i = 0; i < PositionsTotal(); i++)
         {
             m_position.SelectByIndex(i);
@@ -740,8 +726,17 @@ void setBuyPositionTakeProfit()
             {
                 continue;
             }
+            bool isExist = false;
+            for (int j = 0; j < ArraySize(tickets); j++)
+            {
+                if (tickets[j] == m_position.Ticket())
+                {
+                    isExist = true;
+                    break;
+                }
+            }
             if (m_position.PositionType() == POSITION_TYPE_BUY &&
-                m_position.Ticket() != ticket)
+                !isExist)
             {
                 double profit =
                     m_position.PriceCurrent() - m_position.PriceOpen();
@@ -762,10 +757,13 @@ void setBuyPositionTakeProfit()
 //+------------------------------------------------------------------+
 void setSellPositionTakeProfit()
 {
-    int sellPositionCount = getSellPositionCount();
+    ulong tickets[];
+    ArrayResize(tickets, max_position);
+
+    int sellPositionCount = getPositionCount(POSITION_TYPE_SELL);
     if (sellPositionCount >= 2)
     {
-        ulong ticket = getSellPositionWithMaxProfit();
+        getPositionWithMaxProfit(tickets, POSITION_TYPE_SELL);
         for (int i = 0; i < PositionsTotal(); i++)
         {
             m_position.SelectByIndex(i);
@@ -774,8 +772,17 @@ void setSellPositionTakeProfit()
             {
                 continue;
             }
+            bool isExist = false;
+            for (int j = 0; j < ArraySize(tickets); j++)
+            {
+                if (tickets[j] == m_position.Ticket())
+                {
+                    isExist = true;
+                    break;
+                }
+            }
             if (m_position.PositionType() == POSITION_TYPE_SELL &&
-                m_position.Ticket() != ticket)
+                !isExist)
             {
                 double profit =
                     m_position.PriceOpen() - m_position.PriceCurrent();
