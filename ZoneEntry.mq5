@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//|                                                      ZoneEntry.mq5 |
-//|                                           Copyright 2024, junmt  |
-//|                           https:// |
+//|                                                    ZoneEntry.mq5 |
+//|                                            Copyright 2024, junmt |
+//|                                   https://twitter.com/SakenomiFX |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, junmt"
-#property link "https://"
-#property version "1.00"
+#property link "https://twitter.com/SakenomiFX"
+#property version "1.02"
 #include <Expert\Money\MoneyFixedMargin.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -15,18 +15,22 @@ CTrade m_trade;           // trading object
 CSymbolInfo m_symbol;     // symbol info object
 CMoneyFixedMargin m_money;
 //---
-input double InpStopLoss = 10.0;               // StopLoss
-input double InpTakeProfit = 100.0;            // TakeProfit
-input double InpTrailingStop = 50.0;           // TrailingStop
-input bool AutoLot = false;                    // AutoLot (percent from a free margin)
-input double Risk = 10;                        // Risk percent from a free margin
-input double ManualLots = 0.01;                // ManualLots
-input ulong m_magic = 123;                     // Magic number
-input string TradeComment = "ZoneEntry";       // TradeComment
-input ulong InpSlippage = 1;                   // Slippage
-input int MaxOrders = 10;                      // Max Orders
-input int max_position = 1;                    // Max Position
-input bool IsManualOrdersAndPositions = false; // Manual Position
+input double InpStopLoss = 10.0;               // 最も不利なポジションからのストップの幅(pips)
+input double InpTakeProfit = 100.0;            // 自動利益確定(pips)
+input double InpTrailingStop = 50.0;           // トレーリングストップ(pips)
+input bool AutoLot = false;                    // ロットサイズ自動計算 (percent from a free margin)
+input double Risk = 10;                        // ロットサイズを計算するためのリスク(%)
+input double ManualLots = 0.01;                // ロットサイズ(手動の場合のみ)
+input ulong m_magic = 65127841;                // Magic number
+input string TradeComment = "ZoneEntry";       // 注文のコメント欄の内容
+input ulong InpSlippage = 1;                   // 許容するスリッページ(pips)
+input int MaxOrders = 10;                      // ポジションの数
+input int max_position = 1;                    // 有利なポジションを残す数
+input double breakEven = 3.0;                  // 不利なポジションを決済する際の利益(pips)
+input ENUM_TIMEFRAMES TimeFrame = PERIOD_H1;   // 注文の値幅を計算する時間足
+input bool IsManualOrdersAndPositions = false; // 手動トレードの注文に対しても処理を行う
+input bool isShowSymbolName = true;            // シンボル名を表示する
+input bool isDebugMessage = true;              // デバッグ用のメッセージを表示する
 //---
 int LotDigits;
 //---
@@ -86,7 +90,7 @@ int OnInit()
     m_money.Init(GetPointer(m_symbol), Period(), m_adjusted_point);
     m_money.Percent(10); // 10% risk
 
-    atr = iATR(m_symbol.Name(), PERIOD_H1, 14);
+    atr = iATR(m_symbol.Name(), TimeFrame, 14);
 
     // 入力フィールドの作成
     CreatePanel();
@@ -121,6 +125,12 @@ void OnTick()
 
     setBuyPositionTakeProfit();
     setSellPositionTakeProfit();
+    TrailingStop();
+
+    if (isDebugMessage)
+    {
+        setDebugMessage(getDebugMessage1());
+    }
 
     // プロフィットをとる
     if (InpTakeProfit > 0)
@@ -178,59 +188,12 @@ void OnTick()
 
     // 計算量が多いので、PERIOD_CURRENT間隔で計算を行う
     //--- ゼロバーの開いた時間を取得する
-    datetime currbar_time = iTime(Symbol(), PERIOD_H1, 0);
-    bartime = iTime(Symbol(), PERIOD_M1, 0);
+    datetime currbar_time = iTime(Symbol(), TimeFrame, 0);
+    bartime = iTime(Symbol(), TimeFrame, 0);
     //--- 新しいバーが到着すると開いた時刻が変わる
     if (bartime == currbar_time)
     {
         return;
-    }
-
-    for (int i = 0; i < PositionsTotal(); i++)
-    {
-        m_position.SelectByIndex(i);
-
-        if (m_position.Symbol() != m_symbol.Name() ||
-            (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-        {
-            continue;
-        }
-
-        double currentPrice = m_position.PriceCurrent();
-        double openPrice = m_position.PriceOpen();
-
-        if (m_position.PositionType() == POSITION_TYPE_BUY)
-        {
-            if (ExtTrailingStop > 0)
-            {
-                double profit = currentPrice - openPrice;
-                if (profit > ExtTrailingStop &&
-                    m_position.PriceCurrent() - ExtTrailingStop >
-                        m_position.StopLoss())
-                {
-                    double sl = NormalizeDouble(currentPrice - ExtTrailingStop,
-                                                m_symbol.Digits());
-                    m_trade.PositionModify(m_position.Ticket(), sl,
-                                           m_position.TakeProfit());
-                }
-            }
-        }
-        if (m_position.PositionType() == POSITION_TYPE_SELL)
-        {
-            if (ExtTrailingStop > 0)
-            {
-                double profit = openPrice - currentPrice;
-                if (profit > ExtTrailingStop &&
-                    m_position.PriceCurrent() + ExtTrailingStop <
-                        m_position.StopLoss())
-                {
-                    double sl = NormalizeDouble(currentPrice + ExtTrailingStop,
-                                                m_symbol.Digits());
-                    m_trade.PositionModify(m_position.Ticket(), sl,
-                                           m_position.TakeProfit());
-                }
-            }
-        }
     }
 
     return;
@@ -329,7 +292,58 @@ bool RefreshRates()
     //---
     return (true);
 }
+//+------------------------------------------------------------------+
+//| TrailingStopを行う                                             |
+//+------------------------------------------------------------------+
+void TrailingStop()
+{
+    if (ExtTrailingStop <= 0)
+    {
+        return;
+    }
 
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        m_position.SelectByIndex(i);
+
+        if (m_position.Symbol() != m_symbol.Name() ||
+            (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
+        {
+            continue;
+        }
+
+        double currentPrice = m_position.PriceCurrent();
+        double openPrice = m_position.PriceOpen();
+        double slPrice = m_position.StopLoss();
+        double profit = 0.0;
+        double sl = 0.0;
+        int step = 0;
+
+        if (m_position.PositionType() == POSITION_TYPE_BUY)
+        {
+            profit = NormalizeDouble(currentPrice - openPrice, m_symbol.Digits());
+            step = (int)(profit / ExtTrailingStop) - 1;
+            sl = NormalizeDouble(openPrice + step * ExtTrailingStop + 3 * m_adjusted_point,
+                                 m_symbol.Digits());
+        }
+        if (m_position.PositionType() == POSITION_TYPE_SELL)
+        {
+            profit = NormalizeDouble(openPrice - currentPrice, m_symbol.Digits());
+            step = (int)(profit / ExtTrailingStop) - 1;
+            sl = NormalizeDouble(openPrice - step * ExtTrailingStop - 3 * m_adjusted_point,
+                                 m_symbol.Digits());
+        }
+        if (profit <= ExtTrailingStop || step < 0)
+        {
+            continue;
+        }
+        if (sl != slPrice)
+        {
+            m_trade.PositionModify(m_position.Ticket(), sl,
+                                   m_position.TakeProfit());
+        }
+    }
+}
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
@@ -372,6 +386,11 @@ void CreatePanel()
     // ボタンの作成
     CreateTradeStartButton();
     CreateTradeStopButton();
+
+    CreateSymbolName();
+
+    // デバッグメッセージの作成
+    CreateDebugMessage();
 }
 //+------------------------------------------------------------------+
 //| パネルの削除                                                     |
@@ -386,13 +405,16 @@ void DeletePanel()
     }
     ObjectDelete(0, "TradeStartButton");
     ObjectDelete(0, "TradeStopButton");
+    ObjectDelete(0, "SymbolName");
+    ObjectDelete(0, "DebugMessage1");
+    ObjectDelete(0, "DebugMessage2");
 }
 //+------------------------------------------------------------------+
 //| サポートとレジスタンスの入力フィールドの作成                     |
 //+------------------------------------------------------------------+
 void CreateSupportAndResistanceInputs()
 {
-    int y_offset = 30;
+    int y_offset = 100;
 
     for (int i = 0; i < ArraySize(input_names); i++)
     {
@@ -417,7 +439,7 @@ void CreateTradeStartButton()
     ObjectCreate(0, button_name, OBJ_BUTTON, 0, 0, 0);
     ObjectSetInteger(0, button_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
     ObjectSetInteger(0, button_name, OBJPROP_XDISTANCE, 20);
-    ObjectSetInteger(0, button_name, OBJPROP_YDISTANCE, 190);
+    ObjectSetInteger(0, button_name, OBJPROP_YDISTANCE, 230);
     ObjectSetInteger(0, button_name, OBJPROP_XSIZE, 100);
     ObjectSetInteger(0, button_name, OBJPROP_YSIZE, 30);
     ObjectSetString(0, button_name, OBJPROP_TEXT, "指値追加");
@@ -440,11 +462,123 @@ void CreateTradeStopButton()
     ObjectCreate(0, button_name, OBJ_BUTTON, 0, 0, 0);
     ObjectSetInteger(0, button_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
     ObjectSetInteger(0, button_name, OBJPROP_XDISTANCE, 20);
-    ObjectSetInteger(0, button_name, OBJPROP_YDISTANCE, 220);
+    ObjectSetInteger(0, button_name, OBJPROP_YDISTANCE, 260);
     ObjectSetInteger(0, button_name, OBJPROP_XSIZE, 100);
     ObjectSetInteger(0, button_name, OBJPROP_YSIZE, 30);
     ObjectSetString(0, button_name, OBJPROP_TEXT, "指値削除");
     ObjectSetInteger(0, button_name, OBJPROP_COLOR, clrRed);
+}
+//+------------------------------------------------------------------+
+//| 画面の中心にシンボル名を大きく表示する                                        |
+//+------------------------------------------------------------------+
+void CreateSymbolName()
+{
+    if (isShowSymbolName == false)
+    {
+        return;
+    }
+    string name = "SymbolName";
+    string symbol_name = m_symbol.Name();
+    int font_size = 100;
+
+    ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+    ObjectSetString(0, name, OBJPROP_TEXT, symbol_name);
+    ObjectSetInteger(0, name, OBJPROP_COLOR, C'235,235,235');
+    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, font_size);
+    ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, (int)((ChartGetInteger(0, CHART_WIDTH_IN_PIXELS) - TextGetWidth(symbol_name, font_size)) / 2));
+    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, (int)((ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS) - TextGetHeight(font_size)) / 2));
+    ObjectSetInteger(0, name, OBJPROP_XSIZE, TextGetWidth(symbol_name, font_size));
+    ObjectSetInteger(0, name, OBJPROP_YSIZE, TextGetHeight(font_size));
+    ObjectSetInteger(0, name, OBJPROP_BACK, true); // 背景に表示する設定
+}
+//+------------------------------------------------------------------+
+//| Calculate text width in pixels                                   |
+//+------------------------------------------------------------------+
+int TextGetWidth(const string text, const int fontsize)
+{
+    // テキストの幅を計算（簡略化した計算方法）
+    return StringLen(text) * fontsize;
+}
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| Calculate text height in pixels                                  |
+//+------------------------------------------------------------------+
+int TextGetHeight(const int fontsize)
+{
+    // テキストの高さを計算
+    return fontsize;
+}
+//+------------------------------------------------------------------+
+//| デバッグメッセージの表示                                        |
+//+------------------------------------------------------------------+
+void CreateDebugMessage()
+{
+    if (isDebugMessage == false)
+    {
+        return;
+    }
+    string name = "DebugMessage1";
+    string message = getDebugMessage1();
+    int font_size = 8;
+
+    ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, font_size);
+    ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 250);
+    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, 0);
+    ObjectSetInteger(0, name, OBJPROP_XSIZE, TextGetWidth(message, font_size));
+    ObjectSetInteger(0, name, OBJPROP_YSIZE, 30);
+    ObjectSetString(0, name, OBJPROP_TEXT, message);
+    ObjectSetInteger(0, name, OBJPROP_COLOR, clrRed);
+    ObjectSetInteger(0, name, OBJPROP_BACK, true); // 背景に表示する設定
+
+    name = "DebugMessage2";
+    message = getDebugMessage2();
+
+    ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, font_size);
+    ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 250 + TextGetWidth(message, font_size) + 10);
+    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, 0);
+    ObjectSetInteger(0, name, OBJPROP_XSIZE, TextGetWidth(message, font_size));
+    ObjectSetInteger(0, name, OBJPROP_YSIZE, 30);
+    ObjectSetString(0, name, OBJPROP_TEXT, message);
+    ObjectSetInteger(0, name, OBJPROP_COLOR, clrRed);
+    ObjectSetInteger(0, name, OBJPROP_BACK, true); // 背景に表示する設定
+}
+string getDebugMessage1()
+{
+    string message = "";
+    string name = m_symbol.Name();
+    string ask = DoubleToString(m_symbol.Ask(), m_symbol.Digits());
+    string bid = DoubleToString(m_symbol.Bid(), m_symbol.Digits());
+    string point = DoubleToString(m_symbol.Point(), m_symbol.Digits());
+    string digits = DoubleToString(m_symbol.Digits(), m_symbol.Digits());
+    string spread = DoubleToString(m_symbol.Spread(), m_symbol.Digits());
+    message = name + " " + ask + "/" + bid + " POINT:" + point + " DIGITS:" + digits + " SPREAD:" + spread;
+    return message;
+}
+string getDebugMessage2()
+{
+    string message = "";
+    string profit = DoubleToString(ExtTakeProfit, m_symbol.Digits());
+    string stoploss = DoubleToString(ExtStopLoss, m_symbol.Digits());
+    string trailingstop = DoubleToString(ExtTrailingStop, m_symbol.Digits());
+    string slippage = DoubleToString(ExtSlippage, m_symbol.Digits());
+    string ajust = DoubleToString(m_adjusted_point, m_symbol.Digits());
+    message = "TP:" + profit + " SL:" + stoploss + " TRAIL:" + trailingstop + " SLIP:" + slippage + " AJUST:" + ajust;
+    return message;
+}
+void setDebugMessage(string message)
+{
+    if (!isDebugMessage)
+    {
+        return;
+    }
+    string name = "DebugMessage1";
+    ObjectSetString(0, name, OBJPROP_TEXT, message);
 }
 //+------------------------------------------------------------------+
 //| トレード停止ボタンが押されたかを確認                             |
@@ -544,6 +678,17 @@ void entry(double price)
     for (int i = 0; i < MaxOrders; i++)
     {
         double target_price = 0.0;
+
+        request.action = TRADE_ACTION_PENDING;
+        request.symbol = Symbol();
+        request.volume = volume;
+        request.deviation = ExtSlippage;
+        request.magic = m_magic;
+        request.comment = TradeComment;
+
+        request.sl = sl;
+        request.tp = 0;
+
         if (price > currentPrice)
         {
             target_price =
@@ -554,16 +699,8 @@ void entry(double price)
             }
             Print(target_price, " ", sl, " ", currentPrice, " ",
                   m_symbol.Digits(), " ", m_symbol.Point());
-            request.action = TRADE_ACTION_PENDING;
             request.type = ORDER_TYPE_SELL_LIMIT;
-            request.symbol = Symbol();
-            request.volume = volume;
             request.price = target_price;
-            request.sl = sl;
-            request.tp = 0;
-            request.deviation = ExtSlippage;
-            request.magic = m_magic;
-            request.comment = TradeComment;
         }
         else
         {
@@ -575,16 +712,8 @@ void entry(double price)
             }
             Print(target_price, " ", sl, " ", currentPrice, " ",
                   m_symbol.Digits(), " ", m_symbol.Point());
-            request.action = TRADE_ACTION_PENDING;
             request.type = ORDER_TYPE_BUY_LIMIT;
-            request.symbol = Symbol();
-            request.volume = volume;
             request.price = target_price;
-            request.sl = sl;
-            request.tp = 0;
-            request.deviation = ExtSlippage;
-            request.magic = m_magic;
-            request.comment = TradeComment;
         }
         if (!OrderSend(request, result))
         {
@@ -659,7 +788,7 @@ void getPositionWithMaxProfit(ulong &tickets[], int positionType)
 
     // 価格を昇順にソート
     ArraySort(positionPrice);
-    if(positionType == POSITION_TYPE_SELL)
+    if (positionType == POSITION_TYPE_SELL)
     {
         ArrayReverse(positionPrice);
     }
@@ -744,7 +873,7 @@ void setBuyPositionTakeProfit()
                 if (profit < 0)
                 {
                     double tp = NormalizeDouble(
-                        m_position.PriceOpen() + 3 * m_adjusted_point,
+                        m_position.PriceOpen() + breakEven * m_adjusted_point,
                         m_symbol.Digits());
                     m_trade.PositionModify(m_position.Ticket(),
                                            m_position.StopLoss(), tp);
@@ -790,7 +919,7 @@ void setSellPositionTakeProfit()
                 if (profit < 0)
                 {
                     double tp = NormalizeDouble(
-                        m_position.PriceOpen() - 3 * m_adjusted_point,
+                        m_position.PriceOpen() - breakEven * m_adjusted_point,
                         m_symbol.Digits());
                     m_trade.PositionModify(m_position.Ticket(),
                                            m_position.StopLoss(), tp);
