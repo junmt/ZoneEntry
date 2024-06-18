@@ -107,6 +107,7 @@ void OnDeinit(const int reason)
 void OnTick()
 {
     //---
+    m_symbol.RefreshRates();
     if (IsTradeStartButtonPressed())
     {
         entryAll();
