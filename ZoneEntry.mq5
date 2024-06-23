@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, junmt"
 #property link "https://twitter.com/SakenomiFX"
-#property version "1.02"
+#property version "1.03"
 #include <Expert\Money\MoneyFixedMargin.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -123,8 +123,8 @@ void OnTick()
         resetButton();
     }
 
-    setBuyPositionTakeProfit();
-    setSellPositionTakeProfit();
+    setPositionTakeProfit(POSITION_TYPE_BUY);
+    setPositionTakeProfit(POSITION_TYPE_SELL);
     TrailingStop();
 
     if (isDebugMessage)
@@ -315,6 +315,7 @@ void TrailingStop()
         double currentPrice = m_position.PriceCurrent();
         double openPrice = m_position.PriceOpen();
         double slPrice = m_position.StopLoss();
+        int beforeStep = (int)(MathAbs(slPrice - openPrice) / ExtTrailingStop) - 1;
         double profit = 0.0;
         double sl = 0.0;
         int step = 0;
@@ -333,7 +334,7 @@ void TrailingStop()
             sl = NormalizeDouble(openPrice - step * ExtTrailingStop - 3 * m_adjusted_point,
                                  m_symbol.Digits());
         }
-        if (profit <= ExtTrailingStop || step < 0)
+        if (beforeStep < step && profit <= ExtTrailingStop)
         {
             continue;
         }
@@ -697,10 +698,7 @@ void entry(double price)
             {
                 continue;
             }
-            Print(target_price, " ", sl, " ", currentPrice, " ",
-                  m_symbol.Digits(), " ", m_symbol.Point());
             request.type = ORDER_TYPE_SELL_LIMIT;
-            request.price = target_price;
         }
         else
         {
@@ -710,11 +708,13 @@ void entry(double price)
             {
                 continue;
             }
-            Print(target_price, " ", sl, " ", currentPrice, " ",
-                  m_symbol.Digits(), " ", m_symbol.Point());
             request.type = ORDER_TYPE_BUY_LIMIT;
-            request.price = target_price;
         }
+
+        request.price = target_price;
+        Print(target_price, " ", sl, " ", currentPrice, " ",
+              m_symbol.Digits(), " ", m_symbol.Point());
+
         if (!OrderSend(request, result))
         {
             Print("Order added successfully. Price: ", target_price);
@@ -837,17 +837,17 @@ int getPositionCount(int positionType)
     return positionCount;
 }
 //+------------------------------------------------------------------+
-//| 買いポジションが２個以上になった場合、不利なポジションに3pipsのTPを設定する|
+//| ポジションが２個以上になった場合、不利なポジションに3pipsのTPを設定する|
 //+------------------------------------------------------------------+
-void setBuyPositionTakeProfit()
+void setPositionTakeProfit(int positionType)
 {
     ulong tickets[];
     ArrayResize(tickets, max_position);
 
-    int buyPositionCount = getPositionCount(POSITION_TYPE_BUY);
+    int buyPositionCount = getPositionCount(positionType);
     if (buyPositionCount >= 2)
     {
-        getPositionWithMaxProfit(tickets, POSITION_TYPE_BUY);
+        getPositionWithMaxProfit(tickets, positionType);
         for (int i = 0; i < PositionsTotal(); i++)
         {
             m_position.SelectByIndex(i);
@@ -856,52 +856,11 @@ void setBuyPositionTakeProfit()
             {
                 continue;
             }
-            bool isExist = false;
-            for (int j = 0; j < ArraySize(tickets); j++)
+            if (m_position.TakeProfit() > 0.0)
             {
-                if (tickets[j] == m_position.Ticket())
-                {
-                    isExist = true;
-                    break;
-                }
+                continue;
             }
-            if (m_position.PositionType() == POSITION_TYPE_BUY &&
-                !isExist)
-            {
-                double profit =
-                    m_position.PriceCurrent() - m_position.PriceOpen();
-                if (profit < 0)
-                {
-                    double tp = NormalizeDouble(
-                        m_position.PriceOpen() + breakEven * m_adjusted_point,
-                        m_symbol.Digits());
-                    m_trade.PositionModify(m_position.Ticket(),
-                                           m_position.StopLoss(), tp);
-                }
-            }
-        }
-    }
-}
-//+------------------------------------------------------------------+
-//| 売りポジションが２個以上になった場合、不利なポジションに3pipsのTPを設定する|
-//+------------------------------------------------------------------+
-void setSellPositionTakeProfit()
-{
-    ulong tickets[];
-    ArrayResize(tickets, max_position);
 
-    int sellPositionCount = getPositionCount(POSITION_TYPE_SELL);
-    if (sellPositionCount >= 2)
-    {
-        getPositionWithMaxProfit(tickets, POSITION_TYPE_SELL);
-        for (int i = 0; i < PositionsTotal(); i++)
-        {
-            m_position.SelectByIndex(i);
-            if (m_position.Symbol() != Symbol() ||
-                (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-            {
-                continue;
-            }
             bool isExist = false;
             for (int j = 0; j < ArraySize(tickets); j++)
             {
@@ -911,16 +870,25 @@ void setSellPositionTakeProfit()
                     break;
                 }
             }
-            if (m_position.PositionType() == POSITION_TYPE_SELL &&
+            if (m_position.PositionType() == positionType &&
                 !isExist)
             {
-                double profit =
-                    m_position.PriceOpen() - m_position.PriceCurrent();
+                double profit = m_position.Profit();
                 if (profit < 0)
                 {
-                    double tp = NormalizeDouble(
-                        m_position.PriceOpen() - breakEven * m_adjusted_point,
-                        m_symbol.Digits());
+                    double tp = 0.0;
+                    if (positionType == POSITION_TYPE_BUY)
+                    {
+                        tp = NormalizeDouble(
+                            m_position.PriceOpen() + breakEven * m_adjusted_point,
+                            m_symbol.Digits());
+                    }
+                    else if (positionType == POSITION_TYPE_SELL)
+                    {
+                        tp = NormalizeDouble(
+                            m_position.PriceOpen() - breakEven * m_adjusted_point,
+                            m_symbol.Digits());
+                    }
                     m_trade.PositionModify(m_position.Ticket(),
                                            m_position.StopLoss(), tp);
                 }
