@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, junmt"
 #property link "https://twitter.com/SakenomiFX"
-#property version "1.03"
+#property version "1.04"
 #include <Expert\Money\MoneyFixedMargin.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -315,29 +315,30 @@ void TrailingStop()
         double currentPrice = m_position.PriceCurrent();
         double openPrice = m_position.PriceOpen();
         double slPrice = m_position.StopLoss();
-        int beforeStep = (int)(MathAbs(slPrice - openPrice) / ExtTrailingStop) - 1;
         double profit = 0.0;
         double sl = 0.0;
-        int step = 0;
+        int step = -1;
 
         if (m_position.PositionType() == POSITION_TYPE_BUY)
         {
-            profit = NormalizeDouble(currentPrice - openPrice, m_symbol.Digits());
+            profit = currentPrice - openPrice;
             step = (int)(profit / ExtTrailingStop) - 1;
             sl = NormalizeDouble(openPrice + step * ExtTrailingStop + 3 * m_adjusted_point,
                                  m_symbol.Digits());
         }
         if (m_position.PositionType() == POSITION_TYPE_SELL)
         {
-            profit = NormalizeDouble(openPrice - currentPrice, m_symbol.Digits());
+            profit = openPrice - currentPrice;
             step = (int)(profit / ExtTrailingStop) - 1;
             sl = NormalizeDouble(openPrice - step * ExtTrailingStop - 3 * m_adjusted_point,
                                  m_symbol.Digits());
         }
-        if (beforeStep < step && profit <= ExtTrailingStop)
+
+        if(profit < 0 || step < 0 || profit <= ExtTrailingStop)
         {
             continue;
         }
+
         if (sl != slPrice)
         {
             m_trade.PositionModify(m_position.Ticket(), sl,
@@ -694,21 +695,18 @@ void entry(double price)
         {
             target_price =
                 NormalizeDouble(min_price + step * i, m_symbol.Digits());
-            if (isPendingOrderExist(target_price))
-            {
-                continue;
-            }
             request.type = ORDER_TYPE_SELL_LIMIT;
         }
         else
         {
             target_price =
                 NormalizeDouble(max_price - step * i, m_symbol.Digits());
-            if (isPendingOrderExist(target_price))
-            {
-                continue;
-            }
             request.type = ORDER_TYPE_BUY_LIMIT;
+        }
+
+        if (isPendingOrderExist(target_price))
+        {
+            continue;
         }
 
         request.price = target_price;
