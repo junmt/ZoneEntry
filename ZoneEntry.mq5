@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, junmt"
 #property link "https://twitter.com/SakenomiFX"
-#property version "1.04"
+#property version "1.05"
 #include <Expert\Money\MoneyFixedMargin.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -21,6 +21,7 @@ input double InpTrailingStop = 50.0;           // トレーリングストップ
 input bool AutoLot = false;                    // ロットサイズ自動計算 (percent from a free margin)
 input double Risk = 10;                        // ロットサイズを計算するためのリスク(%)
 input double ManualLots = 0.01;                // ロットサイズ(手動の場合のみ)
+input double LotRatio = 1.1;                   // ロットサイズの比率
 input ulong m_magic = 65127841;                // Magic number
 input string TradeComment = "ZoneEntry";       // 注文のコメント欄の内容
 input ulong InpSlippage = 1;                   // 許容するスリッページ(pips)
@@ -680,10 +681,11 @@ void entry(double price)
     for (int i = 0; i < MaxOrders; i++)
     {
         double target_price = 0.0;
+        double lot = NormalizeDouble(volume * MathPow(LotRatio, i), 2);
 
         request.action = TRADE_ACTION_PENDING;
         request.symbol = Symbol();
-        request.volume = volume;
+        request.volume = lot;
         request.deviation = ExtSlippage;
         request.magic = m_magic;
         request.comment = TradeComment;
