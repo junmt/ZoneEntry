@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, junmt"
 #property link "https://twitter.com/SakenomiFX"
-#property version "1.05"
+#property version "1.06"
 #include <Expert\Money\MoneyFixedMargin.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
