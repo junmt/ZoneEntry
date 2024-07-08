@@ -10,10 +10,17 @@
 #include <Trade\PositionInfo.mqh>
 #include <Trade\SymbolInfo.mqh>
 #include <Trade\Trade.mqh>
+#include <..\MT5libs\CLotsLibrary.mqh>
+#include <..\MT5libs\CPositionLibrary.mqh>
+#include <..\MT5libs\COrderLibrary.mqh>
+
 CPositionInfo m_position; // trade position object
 CTrade m_trade;           // trading object
 CSymbolInfo m_symbol;     // symbol info object
 CMoneyFixedMargin m_money;
+CLotsLibrary m_lots_lib;
+CPositionLibrary m_position_lib;
+COrderLibrary m_order_lib;
 //---
 input double InpStopLoss = 10.0;               // 最も不利なポジションからのストップの幅(pips)
 input double InpTakeProfit = 100.0;            // 自動利益確定(pips)
@@ -91,6 +98,31 @@ int OnInit()
     m_money.Init(GetPointer(m_symbol), Period(), m_adjusted_point);
     m_money.Percent(10); // 10% risk
 
+    m_lots_lib.Init(AutoLot, ManualLots, m_money, m_trade, m_symbol);
+
+    m_position_lib.Init(m_symbol, m_trade, m_position);
+    m_position_lib.magic = m_magic;
+    m_position_lib.lots = m_lots_lib.LOT();
+    m_position_lib.profit = InpTakeProfit;
+    m_position_lib.stoploss = InpStopLoss;
+    m_position_lib.trailing_stop = InpTrailingStop;
+    m_position_lib.breakeven = breakEven;
+    // m_position_lib.distance = distance;
+    m_position_lib.slippage = InpSlippage;
+    // m_position_lib.adjusted_point = m_adjusted_point;
+    // m_position_lib.digits_adjust = digits_adjust;
+    m_position_lib.trade_comment = TradeComment;
+    m_position_lib.is_manual_orders_and_positions = IsManualOrdersAndPositions;
+    m_position_lib.max_manual_position = max_position;
+
+    m_order_lib.Init(m_symbol, m_trade, m_position);
+    m_order_lib.magic = m_magic;
+    m_order_lib.slippage = InpSlippage;
+    // m_order_lib.adjusted_point = m_adjusted_point;
+    // m_order_lib.digits_adjust = digits_adjust;
+    m_order_lib.trade_comment = TradeComment;
+    m_order_lib.is_manual_orders_and_positions = IsManualOrdersAndPositions;
+
     atr = iATR(m_symbol.Name(), TimeFrame, 14);
 
     // 入力フィールドの作成
@@ -120,13 +152,13 @@ void OnTick()
     }
     else if (IsTradeStopButtonPressed())
     {
-        removeAll();
+        m_order_lib.RemoveAll();
         resetButton();
     }
 
-    setPositionTakeProfit(POSITION_TYPE_BUY);
-    setPositionTakeProfit(POSITION_TYPE_SELL);
-    TrailingStop();
+    m_position_lib.SetPositionTakeProfit(POSITION_TYPE_BUY);
+    m_position_lib.SetPositionTakeProfit(POSITION_TYPE_SELL);
+    m_position_lib.TrailingStop();
 
     if (isDebugMessage)
     {
@@ -134,58 +166,10 @@ void OnTick()
     }
 
     // プロフィットをとる
-    if (InpTakeProfit > 0)
-    {
-        for (int i = 0; i < PositionsTotal(); i++)
-        {
-            m_position.SelectByIndex(i);
-            if (m_position.Symbol() != Symbol() ||
-                (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-            {
-                continue;
-            }
-            double profit = 0.0;
-            if (m_position.PositionType() == POSITION_TYPE_BUY)
-            {
-                profit = m_position.PriceCurrent() - m_position.PriceOpen();
-            }
-            else
-            {
-                profit = m_position.PriceOpen() - m_position.PriceCurrent();
-            }
-            if (profit >= ExtTakeProfit)
-            {
-                m_trade.PositionClose(m_position.Ticket());
-            }
-        }
-    }
+    m_position_lib.TakeProfitAll();
 
     // ロスカット　ストップが自動で設定されるためコメントアウト
-    // if (InpStopLoss > 0)
-    // {
-    //     for (int i = 0; i < PositionsTotal(); i++)
-    //     {
-    //         m_position.SelectByIndex(i);
-    //         if (m_position.Symbol() != Symbol() ||
-    //             m_position.Magic() != m_magic)
-    //         {
-    //             continue;
-    //         }
-    //         double profit = 0.0;
-    //         if (m_position.PositionType() == POSITION_TYPE_BUY)
-    //         {
-    //             profit = m_position.PriceCurrent() - m_position.PriceOpen();
-    //         }
-    //         else
-    //         {
-    //             profit = m_position.PriceOpen() - m_position.PriceCurrent();
-    //         }
-    //         if (profit <= ExtStopLoss)
-    //         {
-    //             m_trade.PositionClose(m_position.Ticket());
-    //         }
-    //     }
-    // }
+    // m_position_lib.StopLossAll();
 
     // 計算量が多いので、PERIOD_CURRENT間隔で計算を行う
     //--- ゼロバーの開いた時間を取得する
@@ -211,58 +195,6 @@ void ClosePositions(ENUM_POSITION_TYPE pos_type)
                 (m_position.Magic() == m_magic || IsManualOrdersAndPositions))
                 if (m_position.PositionType() == pos_type)
                     m_trade.PositionClose(m_position.Ticket());
-}
-//+------------------------------------------------------------------+
-//|                                                                  |
-//+------------------------------------------------------------------+
-double LOT()
-{
-    double lots = 0.0;
-    //---
-    if (AutoLot)
-    {
-        lots = 0.0;
-        //--- getting lot size for open long position (CMoneyFixedMargin)
-        double sl = 0.0;
-        double check_open_long_lot = m_money.CheckOpenLong(m_symbol.Ask(), sl);
-
-        if (check_open_long_lot == 0.0)
-            return (0.0);
-
-        //--- check volume before OrderSend to avoid "not enough money" error
-        //(CTrade)
-        double chek_volime_lot =
-            m_trade.CheckVolume(m_symbol.Name(), check_open_long_lot,
-                                m_symbol.Ask(), ORDER_TYPE_BUY);
-
-        if (chek_volime_lot != 0.0)
-            if (chek_volime_lot >= check_open_long_lot)
-                lots = check_open_long_lot;
-    }
-    else
-        lots = ManualLots;
-    //---
-    return (LotCheck(lots));
-}
-//+------------------------------------------------------------------+
-//| Lot Check                                                        |
-//+------------------------------------------------------------------+
-double LotCheck(double lots)
-{
-    //--- calculate maximum volume
-    double volume = NormalizeDouble(lots, 2);
-    double stepvol = m_symbol.LotsStep();
-    if (stepvol > 0.0)
-        volume = stepvol * MathFloor(volume / stepvol);
-    //---
-    double minvol = m_symbol.LotsMin();
-    if (volume < minvol)
-        volume = 0.0;
-    //---
-    double maxvol = m_symbol.LotsMax();
-    if (volume > maxvol)
-        volume = maxvol;
-    return (volume);
 }
 //+------------------------------------------------------------------+
 //|                                                                  |
@@ -293,61 +225,6 @@ bool RefreshRates()
     //---
     return (true);
 }
-//+------------------------------------------------------------------+
-//| TrailingStopを行う                                             |
-//+------------------------------------------------------------------+
-void TrailingStop()
-{
-    if (ExtTrailingStop <= 0)
-    {
-        return;
-    }
-
-    for (int i = 0; i < PositionsTotal(); i++)
-    {
-        m_position.SelectByIndex(i);
-
-        if (m_position.Symbol() != m_symbol.Name() ||
-            (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-        {
-            continue;
-        }
-
-        double currentPrice = m_position.PriceCurrent();
-        double openPrice = m_position.PriceOpen();
-        double slPrice = m_position.StopLoss();
-        double profit = 0.0;
-        double sl = 0.0;
-        int step = -1;
-
-        if (m_position.PositionType() == POSITION_TYPE_BUY)
-        {
-            profit = currentPrice - openPrice;
-            step = (int)(profit / ExtTrailingStop) - 1;
-            sl = NormalizeDouble(openPrice + step * ExtTrailingStop + 3 * m_adjusted_point,
-                                 m_symbol.Digits());
-        }
-        if (m_position.PositionType() == POSITION_TYPE_SELL)
-        {
-            profit = openPrice - currentPrice;
-            step = (int)(profit / ExtTrailingStop) - 1;
-            sl = NormalizeDouble(openPrice - step * ExtTrailingStop - 3 * m_adjusted_point,
-                                 m_symbol.Digits());
-        }
-
-        if(profit < 0 || step < 0 || profit <= ExtTrailingStop)
-        {
-            continue;
-        }
-
-        if (sl != slPrice)
-        {
-            m_trade.PositionModify(m_position.Ticket(), sl,
-                                   m_position.TakeProfit());
-        }
-    }
-}
-//+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
 //| Get value of buffers                                             |
@@ -486,7 +363,7 @@ void CreateSymbolName()
 
     ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
     ObjectSetString(0, name, OBJPROP_TEXT, symbol_name);
-    ObjectSetInteger(0, name, OBJPROP_COLOR, C'235,235,235');
+    ObjectSetInteger(0, name, OBJPROP_COLOR, C'82,82,82');
     ObjectSetInteger(0, name, OBJPROP_FONTSIZE, font_size);
     ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
     ObjectSetInteger(0, name, OBJPROP_XDISTANCE, (int)((ChartGetInteger(0, CHART_WIDTH_IN_PIXELS) - TextGetWidth(symbol_name, font_size)) / 2));
@@ -616,28 +493,6 @@ void resetButton()
 //+------------------------------------------------------------------+
 void entryAll()
 {
-    // inputの値を取得して指値を設定する
-    for (int i = 0; i < ArraySize(input_names); i++)
-    {
-        string name = input_names[i];
-        string input_text = ObjectGetString(0, name, OBJPROP_TEXT);
-        double value = NormalizeDouble(StringToDouble(input_text), m_symbol.Digits());
-        Print(name, " ", value, " ", m_symbol.Ask(), " ",
-              m_symbol.Bid(), " ", m_symbol.Digits(), " ", m_symbol.Point());
-        if (value != 0)
-        {
-            entry(value);
-        }
-    }
-}
-//+------------------------------------------------------------------+
-//|
-// priceが現在価格よりも上であればSELL、現在価格よりも下であればBUYの指値をMaxOrdersの個数分、均等に指値を入れる
-//|
-//+------------------------------------------------------------------+
-void entry(double price)
-{
-    double volume = LOT();
     double min_price = 0.0;
     double max_price = 0.0;
     double sl = 0.0;
@@ -650,268 +505,32 @@ void entry(double price)
 
     iGetArray(atr, buffer, start_pos, count, atr_array);
 
-    if (price == 0.0)
+    // inputの値を取得して指値を設定する
+    for (int i = 0; i < ArraySize(input_names); i++)
     {
-        return;
-    }
-
-    if (price > currentPrice)
-    {
-        // 指値の最小priceはATR+priceとする
-        max_price = NormalizeDouble(price + atr_array[0], m_symbol.Digits());
-        min_price = price;
-        sl = NormalizeDouble(max_price + InpStopLoss * m_adjusted_point,
-                             m_symbol.Digits());
-    }
-    else
-    {
-        // 指値の最大priceはATR+priceとする
-        min_price = NormalizeDouble(price - atr_array[0], m_symbol.Digits());
-        max_price = price;
-        sl = NormalizeDouble(min_price - InpStopLoss * m_adjusted_point,
-                             m_symbol.Digits());
-    }
-
-    MqlTradeRequest request;
-    MqlTradeResult result;
-    ZeroMemory(request);
-
-    // MaxOrdersの個数分、priceから均等に指値を入れる
-    double step = (max_price - min_price) / MaxOrders;
-    for (int i = 0; i < MaxOrders; i++)
-    {
-        double target_price = 0.0;
-        double lot = NormalizeDouble(volume * MathPow(LotRatio, i), 2);
-
-        request.action = TRADE_ACTION_PENDING;
-        request.symbol = Symbol();
-        request.volume = lot;
-        request.deviation = ExtSlippage;
-        request.magic = m_magic;
-        request.comment = TradeComment;
-
-        request.sl = sl;
-        request.tp = 0;
-
-        if (price > currentPrice)
+        string name = input_names[i];
+        string input_text = ObjectGetString(0, name, OBJPROP_TEXT);
+        double value = NormalizeDouble(StringToDouble(input_text), m_symbol.Digits());
+        Print(name, " ", value, " ", m_symbol.Ask(), " ",
+              m_symbol.Bid(), " ", m_symbol.Digits(), " ", m_symbol.Point());
+        if (value != 0)
         {
-            target_price =
-                NormalizeDouble(min_price + step * i, m_symbol.Digits());
-            request.type = ORDER_TYPE_SELL_LIMIT;
-        }
-        else
-        {
-            target_price =
-                NormalizeDouble(max_price - step * i, m_symbol.Digits());
-            request.type = ORDER_TYPE_BUY_LIMIT;
-        }
-
-        if (isPendingOrderExist(target_price))
-        {
-            continue;
-        }
-
-        request.price = target_price;
-        Print(target_price, " ", sl, " ", currentPrice, " ",
-              m_symbol.Digits(), " ", m_symbol.Point());
-
-        if (!OrderSend(request, result))
-        {
-            Print("Order added successfully. Price: ", target_price);
-        }
-        else
-        {
-            Print("Failed to add order. Price: ", target_price,
-                  " Error: ", GetLastError());
-        }
-    }
-}
-//+------------------------------------------------------------------+
-//| 指値をすべて削除する                                               |
-//+------------------------------------------------------------------+
-void removeAll()
-{
-    int totalOrders = OrdersTotal(); // 保留中の注文の総数を取得
-    for (int i = totalOrders - 1; i >= 0; i--)
-    {
-        ulong ticket = OrderGetTicket(i);
-        ulong magic = OrderGetInteger(ORDER_MAGIC);
-
-        // Magic Numberが一致する指値注文をチェック
-        if (magic == m_magic || IsManualOrdersAndPositions)
-        {
-            // 削除する注文情報をセット
-            MqlTradeRequest request;
-            MqlTradeResult result;
-            ZeroMemory(request);
-            ZeroMemory(result);
-
-            request.action = TRADE_ACTION_REMOVE; // 注文削除アクション
-            request.order = ticket;               // 削除する注文のチケット番号
-
-            if (!OrderSend(request, result))
+            if (value > currentPrice)
             {
-                Print("Order deleted successfully. Ticket: ", ticket);
+                // 指値の最小priceはATR+priceとする
+                max_price = NormalizeDouble(value + atr_array[0], m_symbol.Digits());
+                min_price = value;
+                m_order_lib.ZoneEntry(min_price, max_price, m_lots_lib.LOT(), LotRatio, MaxOrders, InpStopLoss);
             }
             else
             {
-                Print("Failed to delete order. Ticket: ", ticket,
-                      " Error: ", GetLastError());
+                // 指値の最大priceはATR+priceとする
+                min_price = NormalizeDouble(value - atr_array[0], m_symbol.Digits());
+                max_price = value;
+                m_order_lib.ZoneEntry(max_price, min_price, m_lots_lib.LOT(), LotRatio, MaxOrders, InpStopLoss);
             }
         }
     }
-}
-//+------------------------------------------------------------------+
-//| 現在のポジションの中で最も含み益が大きいポジションのticketidを返す|
-//+------------------------------------------------------------------+
-void getPositionWithMaxProfit(ulong &tickets[], int positionType)
-{
-    double positionPrice[];
-    int priceCounter = 0;
-    int counter = 0;
-
-    ArrayResize(positionPrice, getPositionCount(positionType));
-
-    for (int i = 0; i < PositionsTotal(); i++)
-    {
-        m_position.SelectByIndex(i);
-        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-        {
-            continue;
-        }
-        if (m_position.PositionType() == positionType)
-        {
-            positionPrice[priceCounter] = m_position.PriceOpen();
-            priceCounter++;
-        }
-    }
-
-    // 価格を昇順にソート
-    ArraySort(positionPrice);
-    if (positionType == POSITION_TYPE_SELL)
-    {
-        ArrayReverse(positionPrice);
-    }
-
-    for (int i = 0; i < PositionsTotal(); i++)
-    {
-        m_position.SelectByIndex(i);
-        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-        {
-            continue;
-        }
-        double price = m_position.PriceOpen();
-        for (int j = 0; j < max_position; j++)
-        {
-            if (positionPrice[j] == price)
-            {
-                tickets[counter] = m_position.Ticket();
-                counter++;
-                break;
-            }
-        }
-        if (counter == max_position)
-        {
-            break;
-        }
-    }
-}
-//+------------------------------------------------------------------+
-//| 現在のポジション数を返す                                        |
-//+------------------------------------------------------------------+
-int getPositionCount(int positionType)
-{
-    int positionCount = 0;
-    for (int i = 0; i < PositionsTotal(); i++)
-    {
-        m_position.SelectByIndex(i);
-        if (m_position.Symbol() != Symbol() || (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-        {
-            continue;
-        }
-        if (m_position.PositionType() == positionType)
-        {
-            positionCount++;
-        }
-    }
-    return positionCount;
-}
-//+------------------------------------------------------------------+
-//| ポジションが２個以上になった場合、不利なポジションに3pipsのTPを設定する|
-//+------------------------------------------------------------------+
-void setPositionTakeProfit(int positionType)
-{
-    ulong tickets[];
-    ArrayResize(tickets, max_position);
-
-    int buyPositionCount = getPositionCount(positionType);
-    if (buyPositionCount >= 2)
-    {
-        getPositionWithMaxProfit(tickets, positionType);
-        for (int i = 0; i < PositionsTotal(); i++)
-        {
-            m_position.SelectByIndex(i);
-            if (m_position.Symbol() != Symbol() ||
-                (m_position.Magic() != m_magic && !IsManualOrdersAndPositions))
-            {
-                continue;
-            }
-            if (m_position.TakeProfit() > 0.0)
-            {
-                continue;
-            }
-
-            bool isExist = false;
-            for (int j = 0; j < ArraySize(tickets); j++)
-            {
-                if (tickets[j] == m_position.Ticket())
-                {
-                    isExist = true;
-                    break;
-                }
-            }
-            if (m_position.PositionType() == positionType &&
-                !isExist)
-            {
-                double profit = m_position.Profit();
-                if (profit < 0)
-                {
-                    double tp = 0.0;
-                    if (positionType == POSITION_TYPE_BUY)
-                    {
-                        tp = NormalizeDouble(
-                            m_position.PriceOpen() + breakEven * m_adjusted_point,
-                            m_symbol.Digits());
-                    }
-                    else if (positionType == POSITION_TYPE_SELL)
-                    {
-                        tp = NormalizeDouble(
-                            m_position.PriceOpen() - breakEven * m_adjusted_point,
-                            m_symbol.Digits());
-                    }
-                    m_trade.PositionModify(m_position.Ticket(),
-                                           m_position.StopLoss(), tp);
-                }
-            }
-        }
-    }
-}
-//+------------------------------------------------------------------+
-//| 既に指値が設定されているか確認する                                  |
-//+------------------------------------------------------------------+
-bool isPendingOrderExist(double price)
-{
-    for (int i = 0; i < OrdersTotal(); i++)
-    {
-        ulong ticket = OrderGetTicket(i);
-        ulong magic = OrderGetInteger(ORDER_MAGIC);
-        double order_price = OrderGetDouble(ORDER_PRICE_OPEN);
-        if ((magic == m_magic || IsManualOrdersAndPositions) && order_price == price)
-        {
-            return true;
-        }
-    }
-    return false;
 }
 
 //+------------------------------------------------------------------+
